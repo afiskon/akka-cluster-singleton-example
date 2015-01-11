@@ -10,7 +10,7 @@ import akka.cluster._
 
 class ClusterListener extends Actor with ActorLogging {
   var clusterSize = 0
-  var minClusterSize = 2
+  var minClusterSize = 1
   val cluster = Cluster(context.system)
 
   def updateClusterSize(msg: String) {
@@ -30,7 +30,7 @@ class ClusterListener extends Actor with ActorLogging {
   // subscribe to cluster changes, re-subscribe when restart
   override def preStart() {
     cluster.subscribe(self, InitialStateAsEvents, classOf[MemberEvent], classOf[UnreachableMember])
-    updateClusterSize("(preStart call)")
+    // updateClusterSize("(preStart call)")
   }
 
   override def postStop() {
