@@ -9,40 +9,58 @@ import akka.cluster.ClusterEvent._
 import akka.cluster._
 
 class ClusterListener extends Actor with ActorLogging {
-  var clusterSize = 0
-  var minClusterSize = 1
+  val minClusterSize = 2 // TODO: read from config!
   val cluster = Cluster(context.system)
+  var timerCancellable: Option[Cancellable] = None
 
-  def updateClusterSize(msg: String) {
-    clusterSize = cluster.state.members.count(m => m.status == MemberStatus.Up || m.status == MemberStatus.Joining)
-    log.info(s"[Listener] event: $msg, cluster size: $clusterSize")
+  case class CheckClusterSize(msg: String)
 
-    val temp = clusterSize/2 + 1
-    if(temp > minClusterSize) {
-      log.info(s"[Listener] changing minimum cluster size from $minClusterSize to $temp")
-      minClusterSize = temp
-    } else if(clusterSize < minClusterSize) {
-      log.info(s"[Listener] cluster size is less then $minClusterSize, shutting down...")
+  def checkClusterSize(msg: String) {
+    val clusterSize = cluster.state.members.count { m =>
+      m.status == MemberStatus.Up ||
+        m.status == MemberStatus.Joining
+    }
+    log.info(s"[Listener] event: $msg, cluster size: $clusterSize " +
+      s"(${cluster.state.members})")
+
+
+    if(clusterSize < minClusterSize) {
+      log.info(s"[Listener] cluster size is less than $minClusterSize" +
+        ", shutting down!")
       context.system.shutdown()
     }
   }
 
+  def scheduleClusterSizeCheck(msg: String) {
+    timerCancellable.foreach(_.cancel())
+    timerCancellable = Some(
+      context.system.scheduler.scheduleOnce(
+        1.second, self, CheckClusterSize(msg)
+      )
+    )
+  }
+
   // subscribe to cluster changes, re-subscribe when restart
   override def preStart() {
-    cluster.subscribe(self, InitialStateAsEvents, classOf[MemberEvent], classOf[UnreachableMember])
-    // updateClusterSize("(preStart call)")
+    log.info(s"[Listener] started!")
+    cluster.subscribe(self, InitialStateAsEvents, classOf[MemberEvent],
+      classOf[UnreachableMember])
   }
 
   override def postStop() {
+    log.info("[Listener] stopped!")
     cluster.unsubscribe(self)
   }
 
   def receive = LoggingReceive {
     case msg: MemberEvent =>
-      updateClusterSize(msg.toString)
+      scheduleClusterSizeCheck(msg.toString)
 
     case msg: UnreachableMember =>
-      updateClusterSize(msg.toString)
+      scheduleClusterSizeCheck(msg.toString)
+
+    case r: CheckClusterSize =>
+      checkClusterSize(r.msg)
   }
 }
 
@@ -51,7 +69,7 @@ case class GetTimeResponse(time: Long)
 
 class RemoteTimeActor extends Actor with ActorLogging {
   override def preStart() = {
-    log.debug("RemoteTimeActor started!")
+    log.info("[RemoteTimeActor] started!")
   }
 
   def receive = LoggingReceive {
@@ -66,19 +84,22 @@ case object ScheduleSync
 class LocalTimeActor extends Actor with ActorLogging {
   val remoteTimeActor = context.system.actorOf(
       ClusterSingletonProxy.props(
-        singletonPath = s"/user/$singletonManagerName/$remoteTimeActorName",
-        role = singletonManagerNodeRole
+        singletonPath = s"/user/$managerName/$remoteTimeActorName",
+        role = managerNodeRole
       ),
       name = s"${remoteTimeActorName}Proxy"
     )
-  val syncPeriod = 5.seconds // 500.millis
+  val syncPeriod = 5.seconds
   var time = System.currentTimeMillis()
 
   def scheduleSync() = {
     context.system.scheduler.scheduleOnce(syncPeriod, self, SyncTime)
   }
 
-  override def preStart() = scheduleSync()
+  override def preStart() = {
+    log.info("[LocalTimeActor] started!")
+    scheduleSync()
+  }
 
   // see http://eax.me/akka-scheduler/
   override def postRestart(reason: Throwable) = {}
@@ -93,6 +114,7 @@ class LocalTimeActor extends Actor with ActorLogging {
       scheduleSync()
 
     case GetTimeResponse(remoteTime) =>
+      log.info(s"[LocalTimeActor] sync: $remoteTime")
       time = remoteTime
 
     case GetTimeRequest =>
@@ -107,8 +129,8 @@ object AkkaClusterSingletonExample extends App {
       singletonProps = Props[RemoteTimeActor],
       singletonName = remoteTimeActorName,
       terminationMessage = PoisonPill,
-      role = singletonManagerNodeRole
-    ), name = singletonManagerName)
+      role = managerNodeRole
+    ), name = managerName)
   system.actorOf(Props[LocalTimeActor], name = "localTimeActor")
   system.awaitTermination()
 }

@@ -9,8 +9,8 @@ package object akka_examples {
   implicit val timeout = Timeout(5 seconds)
   implicit val executionContext = global
 
-  def singletonManagerName = "singleton"
-  def singletonManagerNodeRole: Option[String] = None // Some("worker") // можно пометитить, на каких нодах может быть запущен синглтон
+  def managerName = "singleton"
+  def managerNodeRole: Option[String] = None // Some("worker") // можно пометитить, на каких нодах может быть запущен синглтон
   def remoteTimeActorName = "remoteTimeActor"
 
 }
